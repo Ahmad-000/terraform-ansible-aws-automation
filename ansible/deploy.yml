@@ -1,0 +1,83 @@
+---
+- name: Deploy MERN application to AWS EC2
+  hosts: mern_servers
+  become: true
+
+  vars_files:
+    - vault.yml
+
+  vars:
+    app_directory: /opt/mern-boilerplate
+
+
+  tasks:
+    - name: Create application directory
+      ansible.builtin.file:
+        path: "{{ app_directory }}"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0750"
+
+    - name: Copy application files to EC2
+      ansible.posix.synchronize:
+        src: "{{ playbook_dir }}/../"
+        dest: "{{ app_directory }}/"
+        archive: true
+        delete: false
+        rsync_opts:
+          - "--exclude=.git"
+          - "--exclude=.env"
+          - "--exclude=node_modules"
+          - "--exclude=client/node_modules"
+          - "--exclude=server/node_modules"
+          - "--exclude=client/dist"
+          - "--exclude=server/dist"
+          - "--exclude=.terraform"
+          - "--exclude=terraform/.terraform"
+
+    - name: Check that production Compose file exists
+      ansible.builtin.stat:
+        path: "{{ app_directory }}/docker-compose.yml"
+      register: compose_file
+
+    - name: Stop if production Compose file is missing
+      ansible.builtin.fail:
+        msg: "docker-compose.yml was not copied to the EC2 instance."
+      when: not compose_file.stat.exists
+
+    - name: Set application directory ownership
+      ansible.builtin.file:
+        path: "{{ app_directory }}"
+        owner: ubuntu
+        group: ubuntu
+        recurse: true
+
+    - name: Restrict permissions on application directory
+      ansible.builtin.file:
+        path: "{{ app_directory }}"
+        mode: "0750"
+
+    - name: Confirm Docker Compose is installed
+      ansible.builtin.command: docker compose version
+      changed_when: false
+    - name: Create production environment file securely
+      ansible.builtin.template:
+        src: templates/production.env.j2
+        dest: "{{ app_directory }}/.env"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Validate production Docker Compose configuration
+      ansible.builtin.command:
+        cmd: docker compose config --quiet
+        chdir: "{{ app_directory }}"
+      changed_when: false
+      no_log: true
+    - name: Start MERN application containers
+      community.docker.docker_compose_v2:
+        project_src: "{{ app_directory }}"
+        state: present
+        pull: always
