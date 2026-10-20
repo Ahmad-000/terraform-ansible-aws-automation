@@ -93,3 +93,61 @@ jobs:
           tags: |
             ahmad459/mern-boilerplate-backend:latest
             ahmad459/mern-boilerplate-backend:${{ github.sha }}
+            
+deploy-to-ec2:
+    name: Deploy to AWS EC2
+    runs-on: ubuntu-latest
+    needs:
+      - docker-build-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Ansible and rsync
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pipx rsync
+          pipx install --include-deps ansible
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install required Ansible collections
+        run: |
+          ansible-galaxy collection install ansible.posix community.docker
+
+      - name: Prepare deployment credentials
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          ANSIBLE_VAULT_FILE: ${{ secrets.ANSIBLE_VAULT_FILE }}
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+        run: |
+          set -eu
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > /tmp/ec2_key
+          chmod 600 /tmp/ec2_key
+
+          printf '%s' "$ANSIBLE_VAULT_FILE" > ansible/vault.yml
+          chmod 600 ansible/vault.yml
+
+          printf '%s' "$ANSIBLE_VAULT_PASSWORD" > /tmp/vault-password
+          chmod 600 /tmp/vault-password
+
+          printf '[mern_servers]\n%s ansible_user=ubuntu ansible_ssh_private_key_file=/tmp/ec2_key\n' \
+            "$EC2_HOST" > /tmp/inventory.ini
+
+          ssh-keyscan -H "$EC2_HOST" >> "$HOME/.ssh/known_hosts"
+
+      - name: Verify SSH connection
+        run: |
+          ansible mern_servers \
+            -i /tmp/inventory.ini \
+            -m ansible.builtin.ping
+
+      - name: Deploy application
+        run: |
+          ansible-playbook \
+            -i /tmp/inventory.ini \
+            --vault-password-file /tmp/vault-password \
+            ansible/deploy.yml
