@@ -93,8 +93,8 @@ jobs:
           tags: |
             ahmad459/mern-boilerplate-backend:latest
             ahmad459/mern-boilerplate-backend:${{ github.sha }}
-            
-deploy-to-ec2:
+
+  deploy-to-ec2:
     name: Deploy to AWS EC2
     runs-on: ubuntu-latest
     needs:

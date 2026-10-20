@@ -35,6 +35,7 @@
           - "--exclude=server/dist"
           - "--exclude=.terraform"
           - "--exclude=terraform/.terraform"
+          - "--exclude=ansible/vault.yml"
 
     - name: Check that production Compose file exists
       ansible.builtin.stat:
