@@ -8,50 +8,53 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   frontend-build:
-    name: Frontend Build
+    name: Build Frontend
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: client/package-lock.json
 
-      - name: Install frontend dependencies
+      - name: Install Frontend Dependencies
         working-directory: client
         run: npm ci
 
-      - name: Build frontend
+      - name: Build Frontend
         working-directory: client
         run: npm run build
 
   backend-build:
-    name: Backend Build
+    name: Build Backend
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: server/package-lock.json
 
-      - name: Install backend dependencies
+      - name: Install Backend Dependencies
         working-directory: server
         run: npm ci
 
-      - name: Build backend
+      - name: Build Backend
         working-directory: server
         run: npm run build
 
@@ -62,34 +65,35 @@ jobs:
       - frontend-build
       - backend-build
 
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
+      - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push frontend image
+      - name: Build and Push Frontend Image
         uses: docker/build-push-action@v6
         with:
           context: ./client
-          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          push: true
           tags: |
             ahmad459/mern-boilerplate-frontend:latest
             ahmad459/mern-boilerplate-frontend:${{ github.sha }}
 
-      - name: Build and push backend image
+      - name: Build and Push Backend Image
         uses: docker/build-push-action@v6
         with:
           context: ./server
-          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          push: true
           tags: |
             ahmad459/mern-boilerplate-backend:latest
             ahmad459/mern-boilerplate-backend:${{ github.sha }}
@@ -99,24 +103,26 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - docker-build-push
+
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Ansible and rsync
+      - name: Install Deployment Tools
         run: |
+          set -eu
           sudo apt-get update
-          sudo apt-get install -y pipx rsync
-          pipx install --include-deps ansible
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          sudo apt-get install -y ansible rsync
 
-      - name: Install required Ansible collections
+      - name: Install Ansible Collections
         run: |
-          ansible-galaxy collection install ansible.posix community.docker
+          ansible-galaxy collection install \
+            ansible.posix \
+            community.docker
 
-      - name: Prepare deployment credentials
+      - name: Prepare Deployment Credentials
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
@@ -124,7 +130,9 @@ jobs:
           ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
         run: |
           set -eu
+
           install -m 700 -d "$HOME/.ssh"
+
           printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > /tmp/ec2_key
           chmod 600 /tmp/ec2_key
 
@@ -137,39 +145,64 @@ jobs:
           printf '[mern_servers]\n%s ansible_user=ubuntu ansible_ssh_private_key_file=/tmp/ec2_key\n' \
             "$EC2_HOST" > /tmp/inventory.ini
 
-          echo "Testing SSH connection to EC2..."
+      - name: Validate EC2 Host
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          set -eu
 
-          if ssh-keyscan -T 10 -H "$EC2_HOST" >> "$HOME/.ssh/known_hosts" 2>/tmp/ssh-error.txt; then
+          if [ -z "$EC2_HOST" ]; then
+            echo "EC2_HOST secret is empty."
+            exit 1
+          fi
+
+          echo "Checking EC2 DNS..."
+          getent hosts "$EC2_HOST"
+
+      - name: Diagnose EC2 SSH Connectivity
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          set -eu
+
+          echo "Checking SSH port 22 from GitHub runner..."
+
+          if timeout 10 bash -c ':</dev/tcp/$1/22' _ "$EC2_HOST"; then
+            echo "SSH port 22 is reachable."
+          else
+            echo "SSH port 22 is NOT reachable from GitHub runner."
+            echo "Check EC2 security group, public IP, and network routing."
+            exit 1
+          fi
+
+      - name: Retrieve EC2 SSH Host Key
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          set -eu
+
+          if ssh-keyscan -T 10 -H "$EC2_HOST" \
+            >> "$HOME/.ssh/known_hosts" 2>/tmp/ssh-error.txt; then
             echo "SSH host key retrieved successfully."
           else
-            echo "SSH key scan failed. Error details:"
+            echo "SSH host key retrieval failed."
             cat /tmp/ssh-error.txt
             exit 1
           fi
 
-      - name: Diagnose EC2 SSH connectivity
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
+      - name: Verify SSH and Ansible Connection
         run: |
-          echo "Checking EC2 host..."
-          getent hosts "$EC2_HOST" || true
+          set -eu
 
-          echo "Checking SSH port 22..."
-          if timeout 10 bash -c "cat < /dev/null > /dev/tcp/$EC2_HOST/22"; then
-            echo "SSH port 22 is reachable from GitHub Actions."
-          else
-            echo "SSH port 22 is NOT reachable from GitHub Actions."
-            exit 1
-          fi
-
-      - name: Verify SSH connection
-        run: |
           ansible mern_servers \
             -i /tmp/inventory.ini \
-            -m ansible.builtin.ping
+            -m ansible.builtin.ping \
+            --ssh-extra-args='-o ConnectTimeout=10'
 
-      - name: Deploy application
+      - name: Deploy MERN Application
         run: |
+          set -eu
+
           ansible-playbook \
             -i /tmp/inventory.ini \
             --vault-password-file /tmp/vault-password \
