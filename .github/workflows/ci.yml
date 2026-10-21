@@ -139,6 +139,21 @@ jobs:
 
           ssh-keyscan -H "$EC2_HOST" >> "$HOME/.ssh/known_hosts"
 
+      - name: Diagnose EC2 SSH connectivity
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          echo "Checking EC2 host..."
+          getent hosts "$EC2_HOST" || true
+
+          echo "Checking SSH port 22..."
+          if timeout 10 bash -c "cat < /dev/null > /dev/tcp/$EC2_HOST/22"; then
+            echo "SSH port 22 is reachable from GitHub Actions."
+          else
+            echo "SSH port 22 is NOT reachable from GitHub Actions."
+            exit 1
+          fi
+
       - name: Verify SSH connection
         run: |
           ansible mern_servers \
